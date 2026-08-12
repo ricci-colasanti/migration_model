@@ -391,7 +391,7 @@ def main():
     WIDTH, HEIGHT = 10000, 10000
     NUM_AGENTS = 60_000_000  # 60 million agents!
     MOVE_PROB = 1.0          # 100% move probability
-    STEPS = 100              # Test with 100 steps first
+    STEPS = 10              # Test with 100 steps first
     RANDOM_START = True      # Random distribution for immediate coverage
     
     print("\n" + "="*70)
