@@ -105,7 +105,7 @@ def move_agents_kernel(agent_x, agent_y, cell_grid, width, height, move_prob, it
 class SimpleGPUABM:
     """Agent-Based Model running on GPU"""
     
-    def __init__(self, width, height, num_agents, move_prob=0.3):
+    def __init__(self, width, height, num_agents, move_prob=0.3, random_start=True):
         """
         Initialize the simulation.
         
@@ -113,6 +113,8 @@ class SimpleGPUABM:
         - width, height: Grid dimensions
         - num_agents: Number of agents
         - move_prob: Probability an agent tries to move each step
+        - random_start: If True, agents start randomly distributed
+                       If False, agents start in a compact block at center
         """
         self.width = width
         self.height = height
@@ -120,19 +122,24 @@ class SimpleGPUABM:
         self.move_prob = move_prob
         self.step_count = 0
         self.total_cells = width * height
+        self.random_start = random_start
         
-        print(f"\n{'='*60}")
+        print(f"\n{'='*70}")
         print(f"GPU ABM - COMMAND LINE VERSION")
-        print(f"{'='*60}")
+        print(f"{'='*70}")
         print(f"GPU: {cuda.get_current_device().name}")
-        print(f"Grid: {width} x {height} = {self.total_cells} cells")
-        print(f"Agents: {num_agents} ({num_agents/self.total_cells:.1%} occupancy)")
+        print(f"Grid: {width} x {height} = {self.total_cells:,} cells")
+        print(f"Agents: {num_agents:,} ({num_agents/self.total_cells:.2%} occupancy)")
         print(f"Move probability: {move_prob*100:.0f}%")
-        print(f"{'='*60}\n")
+        print(f"Start type: {'Random' if random_start else 'Compact block'}")
+        print(f"{'='*70}\n")
         
         # CONCEPT 5: GPU Memory Allocation
         # Allocate arrays directly on GPU (VRAM)
         # Data lives on GPU for fast access by kernels
+        print("Allocating GPU memory...")
+        start_time = time.perf_counter()
+        
         self.cell_grid_gpu = cuda.device_array(self.total_cells, dtype=np.int32)
         self.agent_x_gpu = cuda.device_array(num_agents, dtype=np.int32)
         self.agent_y_gpu = cuda.device_array(num_agents, dtype=np.int32)
@@ -140,7 +147,7 @@ class SimpleGPUABM:
         # Initialize the grid to all -1 (empty)
         self._fill_grid()
         
-        # Place agents in center block
+        # Place agents (either random or block)
         self._place_agents()
         
         # CONCEPT 7: CPU copies for visualization/stats
@@ -152,7 +159,8 @@ class SimpleGPUABM:
         # Copy initial positions back to CPU
         self._sync_from_gpu()
         
-        print("✓ Simulation ready!\n")
+        elapsed = time.perf_counter() - start_time
+        print(f"✓ Memory allocated and initialized in {elapsed:.2f}s\n")
     
     def _fill_grid(self):
         """Fill the cell grid with -1 (empty) on the GPU"""
@@ -175,7 +183,64 @@ class SimpleGPUABM:
         cuda.synchronize()
     
     def _place_agents(self):
-        """Place agents in a block at the center of the grid"""
+        """Place agents according to random_start setting"""
+        if self.random_start:
+            self._place_agents_random()
+        else:
+            self._place_agents_block()
+    
+    def _place_agents_random(self):
+        """Place agents randomly across the entire grid"""
+        print(f"Generating random positions for {self.num_agents:,} agents...")
+        start_time = time.perf_counter()
+        
+        # Generate random positions on CPU
+        # Use np.random for efficiency on CPU
+        x_cpu = np.random.randint(0, self.width, self.num_agents, dtype=np.int32)
+        y_cpu = np.random.randint(0, self.height, self.num_agents, dtype=np.int32)
+        
+        elapsed = time.perf_counter() - start_time
+        print(f"  Generated positions in {elapsed:.2f}s")
+        
+        # CONCEPT 7: CPU → GPU Data Transfer
+        print("  Transferring to GPU...")
+        start_time = time.perf_counter()
+        
+        self.agent_x_gpu = cuda.to_device(x_cpu)
+        self.agent_y_gpu = cuda.to_device(y_cpu)
+        
+        elapsed = time.perf_counter() - start_time
+        print(f"  Transferred in {elapsed:.2f}s")
+        
+        # Register agents in the grid
+        print("  Registering agents on grid...")
+        start_time = time.perf_counter()
+        
+        @cuda.jit
+        def place_kernel(x_arr, y_arr, grid, num_agents, width):
+            idx = cuda.grid(1)
+            if idx < num_agents:
+                flat_idx = y_arr[idx] * width + x_arr[idx]
+                grid[flat_idx] = idx  # Store agent ID in cell
+        
+        # CONCEPT 6: Launch Configuration
+        threads_per_block = 256
+        blocks = (self.num_agents + threads_per_block - 1) // threads_per_block
+        
+        # Launch the kernel
+        place_kernel[blocks, threads_per_block](
+            self.agent_x_gpu, self.agent_y_gpu,
+            self.cell_grid_gpu, self.num_agents, self.width
+        )
+        
+        # CONCEPT 8: cuda.synchronize()
+        cuda.synchronize()
+        
+        elapsed = time.perf_counter() - start_time
+        print(f"  Registered in {elapsed:.2f}s")
+    
+    def _place_agents_block(self):
+        """Place agents in a compact block at the center of the grid"""
         # Calculate block size to fit all agents in a square
         block_size = int(math.ceil(math.sqrt(self.num_agents)))
         center_x = self.width // 2
@@ -227,7 +292,6 @@ class SimpleGPUABM:
         )
         
         # CONCEPT 8: cuda.synchronize()
-        # Wait for all agents to be placed
         cuda.synchronize()
     
     def _sync_from_gpu(self):
@@ -323,54 +387,121 @@ class SimpleGPUABM:
 def main():
     """Run the simulation and print statistics"""
     
-    # Simulation parameters
-    WIDTH, HEIGHT = 50, 50
-    NUM_AGENTS = 500
-    MOVE_PROB = 0.3
-    STEPS = 20  # Fewer steps for demonstration
+    # Simulation parameters - BIG SIMULATION!
+    WIDTH, HEIGHT = 10000, 10000
+    NUM_AGENTS = 60_000_000  # 60 million agents!
+    MOVE_PROB = 1.0          # 100% move probability
+    STEPS = 100              # Test with 100 steps first
+    RANDOM_START = True      # Random distribution for immediate coverage
+    
+    print("\n" + "="*70)
+    print("GPU ABM - MASSIVE SIMULATION")
+    print("="*70)
+    print(f"Grid: {WIDTH:,} x {HEIGHT:,} = {WIDTH*HEIGHT:,} cells")
+    print(f"Agents: {NUM_AGENTS:,} ({NUM_AGENTS/(WIDTH*HEIGHT):.2%} occupancy)")
+    print(f"Move probability: {MOVE_PROB*100:.0f}%")
+    print(f"Steps: {STEPS}")
+    print(f"Start type: {'Random' if RANDOM_START else 'Compact block'}")
+    print("="*70)
+    
+    # Estimate memory usage
+    grid_mb = (WIDTH * HEIGHT * 4) / (1024 * 1024)
+    agents_mb = (NUM_AGENTS * 4 * 2) / (1024 * 1024)  # x and y arrays
+    total_mb = grid_mb + agents_mb
+    
+    print(f"\nEstimated GPU Memory Usage:")
+    print(f"  Grid: {grid_mb:.1f} MB")
+    print(f"  Agent arrays: {agents_mb:.1f} MB")
+    print(f"  Total: {total_mb:.1f} MB")
+    print(f"  (Plus overhead for other operations)")
     
     # Create simulation
-    sim = SimpleGPUABM(WIDTH, HEIGHT, NUM_AGENTS, move_prob=MOVE_PROB)
+    print(f"\nInitializing simulation...")
+    sim = SimpleGPUABM(WIDTH, HEIGHT, NUM_AGENTS, move_prob=MOVE_PROB, 
+                       random_start=RANDOM_START)
     
     print("Running simulation...\n")
-    print(f"{'Step':>6} {'Mean X':>8} {'Mean Y':>8} {'Std X':>8} {'Std Y':>8} "
-          f"{'Q1':>6} {'Q2':>6} {'Q3':>6} {'Q4':>6}")
-    print("-" * 75)
+    print(f"{'Step':>6} {'Mean X':>10} {'Mean Y':>10} {'Std X':>8} {'Std Y':>8} "
+          f"{'Q1':>8} {'Q2':>8} {'Q3':>8} {'Q4':>8} {'Time (s)':>10}")
+    print("-" * 95)
+    
+    # Track timing
+    step_times = []
+    total_start = time.perf_counter()
     
     # Run simulation
     for i in range(STEPS):
+        step_start = time.perf_counter()
         stats = sim.step()
+        step_time = time.perf_counter() - step_start
+        step_times.append(step_time)
         
         # Print statistics
-        print(f"{stats['step']:>6} {stats['mean_x']:>8.2f} {stats['mean_y']:>8.2f} "
+        print(f"{stats['step']:>6} {stats['mean_x']:>10.2f} {stats['mean_y']:>10.2f} "
               f"{stats['std_x']:>8.2f} {stats['std_y']:>8.2f} "
-              f"{stats['q1']:>6} {stats['q2']:>6} {stats['q3']:>6} {stats['q4']:>6}")
+              f"{stats['q1']:>8,} {stats['q2']:>8,} {stats['q3']:>8,} {stats['q4']:>8,} "
+              f"{step_time:>10.3f}")
         
-        # Print progress every 5 steps
-        if (i + 1) % 5 == 0:
+        # Print progress every 10 steps
+        if (i + 1) % 10 == 0:
+            avg_time = np.mean(step_times[-10:])
             print(f"\n--- Step {i+1} completed ---")
-            print(f"  Agents spread: X: {stats['min_x']}-{stats['max_x']}, "
-                  f"Y: {stats['min_y']}-{stats['max_y']}")
-            print(f"  Quadrants: Q1={stats['q1']}, Q2={stats['q2']}, "
-                  f"Q3={stats['q3']}, Q4={stats['q4']}\n")
+            print(f"  Avg step time (last 10): {avg_time:.3f}s")
+            print(f"  Agents spread: X: {stats['min_x']:,}-{stats['max_x']:,}, "
+                  f"Y: {stats['min_y']:,}-{stats['max_y']:,}")
+            print(f"  Quadrants: Q1={stats['q1']:,}, Q2={stats['q2']:,}, "
+                  f"Q3={stats['q3']:,}, Q4={stats['q4']:,}")
+            
+            # Check balance
+            expected = NUM_AGENTS // 4
+            max_dev = max(abs(stats['q1'] - expected), abs(stats['q2'] - expected),
+                         abs(stats['q3'] - expected), abs(stats['q4'] - expected))
+            print(f"  Quadrant balance: max deviation = {max_dev:,} ({max_dev/NUM_AGENTS*100:.4f}%)\n")
+    
+    total_time = time.perf_counter() - total_start
+    avg_step_time = np.mean(step_times)
     
     # Final summary
-    print("\n" + "="*60)
+    print("\n" + "="*70)
     print("SIMULATION COMPLETE")
-    print("="*60)
+    print("="*70)
     
     # Get final stats
     final_stats = sim._compute_stats()
+    
+    print(f"\nPerformance Summary:")
+    print(f"  Total time: {total_time:.2f}s")
+    print(f"  Average step time: {avg_step_time:.3f}s")
+    print(f"  Steps: {STEPS}")
+    print(f"  Agents per second: {NUM_AGENTS / avg_step_time:,.0f}")
+    
     print(f"\nFinal agent distribution:")
     print(f"  Center of mass: ({final_stats['mean_x']:.2f}, {final_stats['mean_y']:.2f})")
     print(f"  Spread: X σ={final_stats['std_x']:.2f}, Y σ={final_stats['std_y']:.2f}")
-    print(f"  Bounding box: X [{final_stats['min_x']}, {final_stats['max_x']}], "
-          f"Y [{final_stats['min_y']}, {final_stats['max_y']}]")
-    print(f"\n  Quadrant distribution:")
-    print(f"    Q1 (top-left):  {final_stats['q1']:>4} agents")
-    print(f"    Q2 (top-right): {final_stats['q2']:>4} agents")
-    print(f"    Q3 (bottom-left): {final_stats['q3']:>4} agents")
-    print(f"    Q4 (bottom-right): {final_stats['q4']:>4} agents")
+    print(f"  Bounding box: X [{final_stats['min_x']:,}, {final_stats['max_x']:,}], "
+          f"Y [{final_stats['min_y']:,}, {final_stats['max_y']:,}]")
+    print(f"  Bounding box width: {final_stats['max_x'] - final_stats['min_x']:,} cells")
+    print(f"  Bounding box height: {final_stats['max_y'] - final_stats['min_y']:,} cells")
+    
+    print(f"\nQuadrant distribution:")
+    expected = NUM_AGENTS // 4
+    print(f"    Q1 (top-left):  {final_stats['q1']:>10,} agents  (diff: {final_stats['q1']-expected:>+8,})")
+    print(f"    Q2 (top-right): {final_stats['q2']:>10,} agents  (diff: {final_stats['q2']-expected:>+8,})")
+    print(f"    Q3 (bottom-left): {final_stats['q3']:>10,} agents  (diff: {final_stats['q3']-expected:>+8,})")
+    print(f"    Q4 (bottom-right): {final_stats['q4']:>10,} agents  (diff: {final_stats['q4']-expected:>+8,})")
+    
+    # Calculate and display coverage
+    coverage_x = (final_stats['max_x'] - final_stats['min_x']) / WIDTH * 100
+    coverage_y = (final_stats['max_y'] - final_stats['min_y']) / HEIGHT * 100
+    print(f"\nGrid coverage:")
+    print(f"  X-axis: {coverage_x:.1f}% of grid width")
+    print(f"  Y-axis: {coverage_y:.1f}% of grid height")
+    
+    # Estimate time to full coverage
+    if not RANDOM_START:
+        expansion_rate = (final_stats['max_x'] - final_stats['min_x']) / STEPS
+        steps_to_full = (WIDTH - (final_stats['max_x'] - final_stats['min_x'])) / expansion_rate
+        print(f"\nEstimated steps to full coverage: {steps_to_full:.0f}")
 
 if __name__ == "__main__":
     main()
