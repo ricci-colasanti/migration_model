@@ -1,0 +1,68 @@
+============================================================
+LARGE-SCALE ABM SIMULATION
+============================================================
+Starting with 60,000,000 agents on 10,000x10,000 grid
+Move probability: 5%
+Neighborhood: 5x5
+Iterations: 10
+============================================================
+
+
+============================================================
+INITIALIZING LARGE-SCALE ABM
+============================================================
+Grid: 10,000x10,000 = 100,000,000 cells
+Agents: 60,000,000 (60.0% occupancy)
+Move probability: 5%
+Neighborhood: 5x5
+Cores: 12
+============================================================
+
+Memory requirements:
+  Grid (agent_id + gradient): 762.94 MB
+  Agents (id + x + y + value): 915.53 MB
+  Total: 1678.47 MB
+============================================================
+
+Placing agents randomly...
+Agents placed!
+
+Generating gradient field...
+Gradient generated!
+
+Generated 24 neighbor offsets
+============================================================
+
+Simulation ready!
+============================================================
+
+Running simulation...
+
+Iteration    Time (s)     Occupancy   
+------------------------------------------------------------
+1            24.238       60.00%      
+2            24.102       60.00%      
+3            24.267       60.00%      
+4            24.419       60.00%      
+5            24.372       60.00%      
+6            24.285       60.00%      
+7            24.877       60.00%      
+8            24.319       60.00%      
+9            24.297       60.00%      
+10           24.493       60.00%      
+------------------------------------------------------------
+
+============================================================
+SIMULATION COMPLETE
+============================================================
+Neighborhood: 5x5
+Total time: 243.67s
+Average per iteration: 24.367s
+Final occupancy: 60.00%
+Final agents: 60,000,000
+
+Performance estimate:
+  Agents: 60,000,000 per iteration
+  Neighbors per agent: 24
+  Estimated moves per second: 123,118
+============================================================

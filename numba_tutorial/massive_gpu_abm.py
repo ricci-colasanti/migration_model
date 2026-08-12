@@ -305,7 +305,7 @@ class ABMVisualizer:
 
 def main():
     # MASSIVE PARAMETERS - 15,000 x 15,000 grid
-    WIDTH, HEIGHT = 40000, 40000     # 225 million cells
+    WIDTH, HEIGHT = 15000, 15000     # 225 million cells
     NUM_AGENTS = 60000000            # 60 million agents (26.7% occupancy)
     MOVE_PROB = 1.0                  # 30% move chance
     VIEW_SIZE = 200                  # Viewport size (200x200 - zoomed in)
